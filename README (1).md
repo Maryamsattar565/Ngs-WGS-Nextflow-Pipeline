@@ -182,10 +182,6 @@ The current version ends at variant calling. Possible next steps:
 - Functional prediction (SIFT, PolyPhen, CADD, REVEL)
 - Downstream statistical or machine-learning analysis of annotated variants
 
-## 12. Important Execution Note
-
-A successful run needs a successful SRA download, enough storage, a suitable paired-end dataset, and every process finishing. Only report a completed VCF analysis after a real sample has passed through the whole workflow.
-
 **Maryam Sattar**
 *Bioinformatics | Computational Biology*
 
