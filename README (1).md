@@ -8,101 +8,84 @@
 
 ## 1. Project Overview
 
-An automated and reproducible Nextflow DSL2 pipeline for processing paired-end human whole-genome sequencing (WGS) or targeted resequencing data. The workflow retrieves sequencing data from the NCBI Sequence Read Archive (SRA), performs adapter trimming and quality filtering with `fastp`, aligns reads to the human GRCh38/hg38 reference genome using `BWA-MEM`, sorts and indexes BAM files with `SAMtools`, and performs variant calling using `BCFtools`. The final output is a compressed and indexed VCF file containing detected SNVs and indels.
+A reproducible Nextflow DSL2 pipeline for paired-end human whole-genome sequencing (WGS) data. It downloads reads from the NCBI Sequence Read Archive (SRA), trims and quality-checks them with `fastp`, aligns them to the human GRCh38/hg38 reference with `BWA-MEM`, sorts and indexes the BAM with `SAMtools`, and calls variants with `BCFtools`. The final output is a compressed, indexed VCF of SNVs and indels.
+
+The example run uses the paired-end SRA accession `SRR062634`.
 
 ## 2. Pipeline Architecture
 
 ```
-SRA Accession List (samples.csv)
+SRA accession list (samples.csv)
             |
             v
-      +------------------+
-      |   FETCH_FASTQ    |  <-- prefetch + fasterq-dump
-      +--------+---------+
-               |
-               v
-      +------------------+
-      |    FASTP_QC      |  <-- trimming + quality filtering + reports
-      +--------+---------+
-               |
-               v
-      +------------------+
-      | ALIGN_AND_SORT   |  <-- BWA-MEM + SAMtools
-      +--------+---------+
-               |
-               v
-      +------------------+
-      | VARIANT_CALLING  |  <-- BCFtools mpileup + call
-      +--------+---------+
-               |
-               v
-        Compressed VCF
-        (.vcf.gz + .csi)
+   +------------------+
+   |   FETCH_FASTQ    |  prefetch + fasterq-dump
+   +--------+---------+
+            |
+            v
+   +------------------+
+   |    FASTP_QC      |  trimming + quality filtering + HTML/JSON reports
+   +--------+---------+
+            |
+            v
+   +------------------+
+   |  ALIGN_AND_SORT  |  bwa mem + samtools sort + samtools index
+   +--------+---------+
+            |
+            v
+   +------------------+
+   | VARIANT_CALLING  |  bcftools mpileup + call + index
+   +--------+---------+
+            |
+            v
+     Compressed VCF
+     (.vcf.gz + .csi)
 ```
 
 ## 3. Workflow Processes
 
-### 3.1 FETCH_FASTQ
-Downloads paired-end sequencing reads from the NCBI SRA using `sra-tools`.
-- `prefetch` retrieves the SRA run.
-- `fasterq-dump` converts the run into FASTQ files using `--split-files`.
-- The process outputs paired FASTQ files for downstream analysis.
+| Process | Tools | What it does | Output |
+|---|---|---|---|
+| `FETCH_FASTQ` | `prefetch`, `fasterq-dump` | Downloads the SRA run and converts it to paired FASTQ (`--split-files`). Fails if either FASTQ is empty. | `results/raw_fastq/` |
+| `FASTP_QC` | `fastp` | Removes adapters, filters low-quality reads, writes QC reports. | `results/clean_fastq/`, `results/qc/` |
+| `ALIGN_AND_SORT` | `bwa mem`, `samtools` | Maps cleaned reads to hg38, sorts by coordinate, indexes the BAM. | `results/bam/` |
+| `VARIANT_CALLING` | `bcftools` | `mpileup` then `call -mv` (multiallelic caller, variant sites only), compressed with `-Oz` and indexed. | `results/vcf/` |
 
-### 3.2 FASTP_QC
-Performs read preprocessing and generates quality-control reports using `fastp`.
-- Removes adapter sequences.
-- Filters low-quality bases/reads according to fastp settings.
-- Produces cleaned paired FASTQ files.
-- Produces HTML and JSON QC reports.
+> The pipeline ends at variant calling. It does not yet filter variants, annotate them, or interpret them biologically.
 
-### 3.3 ALIGN_AND_SORT
-Maps cleaned reads to the human GRCh38/hg38 reference genome and prepares sorted BAM files.
-- `BWA-MEM` performs read alignment.
-- `SAMtools sort` creates coordinate-sorted BAM files.
-- `SAMtools index` creates BAM index files.
+## 4. Requirements
 
-### 3.4 VARIANT_CALLING
-Identifies candidate genomic variants from the aligned BAM file using `BCFtools`.
-- `bcftools mpileup` generates genotype likelihood information from the alignment.
-- `bcftools call` performs variant calling with the multiallelic caller (`-m`) and outputs variant sites (`-v`).
-- The VCF is compressed with bgzip-compatible BCFtools output (`-Oz`).
-- The final VCF is indexed with `bcftools index`.
-
-> The current pipeline performs variant calling but does not yet include downstream variant filtering, functional annotation, ClinVar annotation, or biological interpretation.
-
-## 4. Environmental Setup
-
-### 4.1 Prerequisites
-- Operating system: Linux or WSL2 (Ubuntu 20.04/22.04)
-- Conda/Miniconda or Mamba
+- Linux or WSL2 (Ubuntu 20.04/22.04)
+- Conda/Miniconda installed at `~/miniconda` (the `safe`, `conda` and `parallel` profiles source `$HOME/miniconda/etc/profile.d/conda.sh`)
 - Java 17 or later for Nextflow
-- Sufficient disk space for the reference genome, SRA/FASTQ data, BAM files, and VCF outputs
+- Enough disk space for the reference genome, FASTQ, cleaned FASTQ, BAM and Nextflow's `work/` folder. A human WGS run needs many gigabytes.
+- Suggested resources per task: download 2 CPUs / 4 GB, QC 2 CPUs / 4 GB, alignment 4 CPUs / 12 GB, variant calling 2 CPUs / 8 GB
 
-### 4.2 Conda Environments
+### Conda environments
 
 ```bash
 # Nextflow environment
 conda create -n nextflow_env -y openjdk=17 nextflow
 
-# NGS tools environment
-conda create -n ngs_tools -y sra-tools fastp bwa samtools bcftools
+# NGS tools environment (the profiles activate this one)
+conda create -n ngs_tools -y -c conda-forge -c bioconda sra-tools fastp bwa samtools bcftools
 ```
-
-Nextflow can use Conda environments to provide isolated software dependencies for processes.
 
 ## 5. Project Structure
 
 ```
-Ngs_project/
-├── main.nf
-├── nextflow.config
-├── samples.csv
-├── .gitignore
+NGS_PROJECT/
+├── main.nf              # workflow and processes
+├── nextflow.config      # profiles and resource limits
+├── samples.csv          # SRA accessions, one per line
+├── environment.yml      # tool list for Conda (reproducibility)
+├── Dockerfile           # optional Docker image
 ├── README.md
 ├── ref/
 │   ├── hg38.fasta
 │   ├── hg38.fasta.fai
-│   └── BWA index files
+│   └── hg38.fasta.amb / .ann / .bwt / .pac / .sa   # BWA index
+├── work/                # Nextflow task files (keep for -resume)
 └── results/
     ├── raw_fastq/
     ├── clean_fastq/
@@ -113,10 +96,10 @@ Ngs_project/
 
 ## 6. Reference Genome Setup
 
-The pipeline uses the UCSC GRCh38/hg38 reference FASTA. The FASTA is indexed for SAMtools and BWA before pipeline execution.
+The pipeline expects `ref/hg38.fasta` and its index files next to it. It does **not** download or rebuild the reference. If you already have `hg38.fasta` with `.amb`, `.ann`, `.bwt`, `.fai`, `.pac` and `.sa`, keep them as they are. Otherwise build them once:
 
 ```bash
-cd ~/Ngs_project/ref
+cd ~/NGS_PROJECT/ref
 
 wget https://hgdownload.soe.ucsc.edu/goldenPath/hg38/bigZips/hg38.fa.gz -O hg38.fasta.gz
 gunzip hg38.fasta.gz
@@ -125,82 +108,84 @@ samtools faidx hg38.fasta
 bwa index hg38.fasta
 ```
 
+The reference file must be named `hg38.fasta`, because `main.nf` looks for that exact name.
+
 ## 7. Input Samples
 
-SRA run accessions are supplied through `samples.csv`. The current example contains one accession:
+`samples.csv` holds one SRA run accession per line, with no header:
 
 ```
 SRR062634
 ```
 
-The selected accession should represent suitable paired-end human DNA sequencing data for the intended WGS or targeted resequencing analysis.
+Use accessions that are paired-end human DNA sequencing data.
 
 ## 8. Running the Pipeline
 
-### 8.1 Stub / Validation Run
-The stub run tests the workflow structure without performing the full data-processing workload.
-
 ```bash
-nextflow run main.nf -profile safe -stub-run
-```
-
-### 8.2 Production Run
-Runs the complete workflow with one task at a time, which is suitable for limited WSL or laptop resources.
-
-```bash
+cd ~/NGS_PROJECT
 conda activate nextflow_env
 nextflow run main.nf -profile safe
 ```
 
-### 8.3 Parallel Run
-Runs with a maximum of two concurrent tasks when additional CPU and memory resources are available.
+If a run stops, fix the reported problem and continue where it stopped:
 
 ```bash
-nextflow run main.nf -profile parallel
+nextflow run main.nf -profile safe -resume
+```
+
+This is a real run. The processes have no `stub:` blocks, so `-stub-run` is not supported.
+
+### Profiles
+
+| Profile | Use it when |
+|---|---|
+| `safe` | Recommended. Uses the installed `ngs_tools` Conda environment, one task at a time. |
+| `conda` | Same as `safe` (kept for clarity). |
+| `parallel` | You have spare RAM and disk: up to two tasks at a time. |
+| `docker` | You want containers. Docker must be installed and running. Build with `docker build -t ngs-wgs:1.0 .`, then run `nextflow run main.nf -profile docker -resume`. |
+
+You can also override the defaults:
+
+```bash
+nextflow run main.nf -profile safe --samples samples.csv --ref ref/hg38.fasta --outdir results
 ```
 
 ## 9. Output Directory
 
 ```
 results/
-├── raw_fastq/       # Original FASTQ files retrieved from SRA
+├── raw_fastq/       # FASTQ files from SRA
 ├── clean_fastq/     # fastp-processed FASTQ files
 ├── qc/              # fastp HTML and JSON reports
-├── bam/             # Sorted and indexed BAM files
-└── vcf/             # Compressed and indexed VCF files
+├── bam/             # sorted BAM files and indexes
+└── vcf/             # compressed VCF files and .csi indexes
 ```
+
+Outputs are hard-linked into `results/` instead of copied, which saves disk space. Keep `work/`, because `-resume` depends on it.
 
 ## 10. Reproducibility and Resource Management
 
-- Nextflow DSL2 separates the workflow into modular processes.
-- Conda environments provide isolated software dependencies.
-- The `safe` profile limits local execution to one concurrent task.
-- The `parallel` profile allows up to two concurrent tasks.
-- Nextflow work directories and generated outputs can be excluded from version control.
-- Large genomic data and reference files should not be committed to GitHub.
-- Nextflow is designed for reproducible and portable scientific workflows, and supports execution with software environments such as Conda.
+- Nextflow DSL2 splits the workflow into separate processes, each tagged by sample.
+- The `safe` profile runs one task at a time, which suits a laptop or WSL.
+- Resource limits are set per process label (`download`, `qc`, `alignment`, `variants`) in `nextflow.config`.
+- `environment.yml` and the `Dockerfile` record the tool list for reproducibility. The recommended `safe` run does not need Docker or a new Conda environment.
+- Do not commit the reference genome, FASTQ, BAM, `work/` or `results/` to GitHub.
 
 ## 11. Current Scope and Future Extensions
 
-The current version ends at variant calling. Possible future extensions include:
+The current version ends at variant calling. Possible next steps:
 
-- Variant quality filtering.
-- Variant annotation with VEP, SnpEff, or ANNOVAR.
-- Integration of ClinVar annotations.
-- Population-frequency annotation such as gnomAD.
-- Functional prediction features such as SIFT, PolyPhen, CADD, or REVEL.
-- Downstream statistical or machine-learning analysis of annotated variants.
+- Variant quality filtering
+- Annotation with VEP, SnpEff or ANNOVAR
+- ClinVar and gnomAD annotation
+- Functional prediction (SIFT, PolyPhen, CADD, REVEL)
+- Downstream statistical or machine-learning analysis of annotated variants
 
 ## 12. Important Execution Note
 
-The pipeline includes a stub-mode validation command. A successful production run requires successful SRA download, sufficient storage, an appropriate paired-end dataset, and successful completion of every process. The project should only claim a completed VCF analysis after a real sample has successfully passed through the entire workflow.
-
-## 13. Author
+A successful run needs a successful SRA download, enough storage, a suitable paired-end dataset, and every process finishing. Only report a completed VCF analysis after a real sample has passed through the whole workflow.
 
 **Maryam Sattar**
 *Bioinformatics | Computational Biology*
 
-## 14. References
-
-- [Nextflow documentation and training materials](https://nextflow.io/)
-- [BCFtools documentation](https://samtools.github.io/bcftools/)
